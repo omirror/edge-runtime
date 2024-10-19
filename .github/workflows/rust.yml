@@ -14,16 +14,17 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
+    - name: build
       run: GIT_V_TAG=0.1.1 cargo build --profile release
       
     - uses: BetaHuhn/do-spaces-action@v2
+      id: spaces
       with:
         access_key: ${{ secrets.ACCESS_KEY}}
         secret_key: ${{ secrets.SECRET_KEY }}
         space_name: ${{ secrets.SPACE_NAME }}
         space_region: ${{ secrets.SPACE_REGION }}
-        source: /home/runner/work/edge-runtime/edge-runtime/target/release/edge-runtime
+        source: /target/release/edge-runtime
         out_dir: /edge-runtime/bin
 
     - name: update deployment status
@@ -32,6 +33,6 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         state: ${{ job.status }}
-        deployment_id: ${{ steps.deployment.outputs.deployment_id }}
+        deployment_id: ${{ steps.build.outputs.deployment_id }}
         environment_url: ${{steps.spaces.outputs.output_url}}
         description: "Successfully uploaded files to DO Spaces"

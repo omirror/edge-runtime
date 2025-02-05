@@ -1,24 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-  "./crates/base",
-  "./crates/base_rt",
-  "./crates/base_mem_check",
-  "./crates/http_utils",
-  "./crates/cli",
-  "./crates/deno_manifest",
-  "./crates/sb_workers",
-  "./crates/sb_env",
-  "./crates/sb_core",
-  "./crates/sb_os",
-  "./crates/cpu_timer",
-  "./crates/event_worker",
-  "./crates/npm",
-  "./crates/npm_cache",
-  "./crates/sb_graph",
-  "./crates/sb_module_loader",
-  "./crates/sb_fs",
-  "./crates/sb_ai"
+  "cli",
+  "crates/base",
+  "crates/base_rt",
+  "crates/base_mem_check",
+  "crates/http_utils",
+  "crates/deno_manifest",
+  "crates/cpu_timer",
+  "crates/npm",
+  "crates/npm_cache",
+  "crates/graph",
+  "crates/eszip_async_trait",
+  "crates/module_loader",
+  "crates/fs",
+  "ext/node",
+  "ext/workers",
+  "ext/event_worker",
+  "ext/env",
+  "ext/core",
+  "ext/os",
+  "ext/ai",
+  "ext/ai/utilities"
 ]
 
 [workspace.dependencies]
@@ -26,6 +29,7 @@ deno_ast = { version = "=0.40.0", features = ["transpiling"] }
 deno_core = "0.293.0"
 deno_broadcast_channel = "0.155.0"
 deno_canvas = "0.30.0"
+deno_cache = "0.93.0"
 deno_console = "0.161.0"
 deno_crypto = "0.175.0"
 deno_fetch = "0.185.0"
@@ -49,6 +53,31 @@ deno_cache_dir = "=0.10.0"
 deno_lockfile = "0.20.0"
 deno_permissions = "0.21.0"
 
+# local crates
+cli = { version = "0.1.0", path = "./cli" }
+deno_manifest = { path = "./crates/deno_manifest" }
+base = { version = "0.1.0", path = "./crates/base" }
+base_rt = { version = "0.1.0", path = "./crates/base_rt" }
+base_mem_check = { version = "0.1.0", path = "./crates/base_mem_check" }
+http_utils = { version = "0.1.0", path = "./crates/http_utils" }
+cpu_timer = { version = "0.1.0", path = "./crates/cpu_timer" }
+npm = { version = "0.1.0", path = "./crates/npm" }
+npm_cache = { version = "0.1.0", path = "./crates/npm_cache" }
+graph = { version = "0.1.0", path = "./crates/graph" }
+eszip_async_trait = { version = "0.1.0", path = "./crates/eszip_async_trait" }
+module_loader = { version = "0.1.0", path = "./crates/module_loader" }
+fs = { version = "0.1.0", path = "./crates/fs" }
+
+# exts
+sb_node = { version = "0.1.0", path = "./ext/node" }
+sb_workers = { version = "0.1.0", path = "./ext/workers" }
+sb_event_worker = { version = "0.1.0", path = "./ext/event_worker" }
+sb_env = { version = "0.1.0", path = "./ext/env"}
+sb_core = { version = "0.1.0", path = "./ext/core" }
+sb_os = { version = "0.1.0", path = "./ext/os" }
+sb_ai = { version = "0.1.0", path = "./ext/ai" }
+sb_ai_v8_utilities = { version = "0.1.0", path = "./ext/ai/utilities" }
+
 # crypto
 hkdf = "0.12.3"
 rsa = { version = "0.9.3", default-features = false, features = ["std", "pem", "hazmat"] } # hazmat needed for PrehashSigner in crates/node
@@ -68,8 +97,9 @@ url = { version = "< 2.5.0", features = ["serde", "expose_internals"] } # upgrad
 eszip = "=0.72.2"
 log = "0.4.20"
 anyhow = "1.0.57"
-libc = "0.2.126"
+libc = "0.2.144"
 libz-sys = { version = "1.1", default-features = false }
+num-traits = "0.2"
 enum-as-inner = "0.6.0"
 serde = { version = "1.0.149", features = ["derive"] }
 serde_json = "1.0.85"
@@ -90,6 +120,7 @@ fs3 = "0.5.0"
 uuid = { version = "1.3.0", features = ["v4"] }
 monch = "=0.5.0"
 reqwest = { version = "0.12.4", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "socks", "json", "http2"] } # pinned because of https://github.com/seanmonstar/reqwest/pull/1955
+reqwest_v011 = { package = "reqwest", version = "0.11", features = ["stream", "json", "multipart"] }
 ring = "^0.17.0"
 import_map = { version = "=0.20.0", features = ["ext"] }
 base32 = "=0.4.0"
@@ -100,6 +131,7 @@ ctor = "0.2.6"
 fastwebsockets = { version = "0.6", features = ["upgrade", "unstable-split"] }
 percent-encoding = "2.3.0"
 scopeguard = "1.2.0"
+clap = { version = "4.0.29", features = ["cargo", "string", "env"] }
 glob = "0.3.1"
 httparse = "1.8.0"
 http = "1.0"
@@ -110,7 +142,6 @@ faster-hex = "0.9"
 num-bigint = { version = "0.4", features = ["rand"] }
 notify = "=5.0.0"
 parking_lot = "0.12.0"
-pin-project = "1.0.11"
 rustls = "0.22.4"
 rustls-pemfile = "2"
 rustls-tokio-stream = "=0.2.23"
@@ -119,10 +150,10 @@ brotli = "6.0.0"
 cbc = { version = "=0.1.2", features = ["alloc"] }
 ecb = "=0.1.2"
 data-encoding = "2.3.3"
-elliptic-curve = { version = "0.13.4", features = ["alloc", "arithmetic", "ecdh", "std", "pem"] }
+elliptic-curve = { version = "0.13.4", features = ["alloc", "arithmetic", "ecdh", "std", "pem", "jwk"] }
 p224 = { version = "0.13.0", features = ["ecdh"] }
-p256 = { version = "0.13.2", features = ["ecdh"] }
-p384 = { version = "0.13.0", features = ["ecdh"] }
+p256 = { version = "0.13.2", features = ["ecdh", "jwk"] }
+p384 = { version = "0.13.0", features = ["ecdh", "jwk"] }
 sha1 = { version = "0.10.6", features = ["oid"] }
 sha2 = { version = "0.10.8", features = ["oid"] }
 lazy-regex = "3"
@@ -130,10 +161,15 @@ rand = "=0.8.5"
 signature = "2.1"
 spki = "0.7.2"
 urlencoding = "2.1.2"
+pin-project = "1"
+fxhash = "0.2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
 rkyv = "0.7"
 tempfile = "3"
+xxhash-rust = "0.8"
+either = "1"
+serial_test = "3.0.0"
 
 [patch.crates-io]
 # If the PR is merged upstream, remove the line below.

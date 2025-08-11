@@ -78,7 +78,7 @@ use sb_event_worker::events::{EventMetadata, WorkerEventWithMetadata};
 use sb_event_worker::js_interceptors::sb_events_js_interceptors;
 use sb_event_worker::sb_user_event_worker;
 use sb_node::deno_node;
-use sb_workers::context::{UserWorkerMsgs, WorkerContextInitOpts, WorkerRuntimeOpts};
+use sb_workers::context::{UserWorkerMsgs, WorkerContextInitOpts, WorkerKind, WorkerRuntimeOpts};
 use sb_workers::sb_user_workers;
 
 const DEFAULT_ALLOC_CHECK_INT_MSEC: u64 = 1000;
@@ -106,6 +106,11 @@ pub static SHOULD_DISABLE_DEPRECATED_API_WARNING: OnceCell<bool> = OnceCell::new
 pub static SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING: OnceCell<bool> = OnceCell::new();
 pub static SHOULD_INCLUDE_MALLOCED_MEMORY_ON_MEMCHECK: OnceCell<bool> = OnceCell::new();
 pub static MAYBE_DENO_VERSION: OnceCell<String> = OnceCell::new();
+
+pub static MAIN_WORKER_INITIAL_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
+pub static MAIN_WORKER_MAX_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
+pub static EVENT_WORKER_INITIAL_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
+pub static EVENT_WORKER_MAX_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
 
 thread_local! {
     // NOTE: Suppose we have met `.await` points while initializing a
@@ -653,8 +658,10 @@ where
         let build_file_system_fn =
             |base_fs: Arc<dyn deno_fs::FileSystem>| -> Result<Arc<dyn deno_fs::FileSystem>, AnyError> {
                 let tmp_fs = TmpFs::try_from(maybe_tmp_fs_config.unwrap_or_default())?;
-                let fs = PrefixFs::new("/tmp", tmp_fs, Some(base_fs))
-                    .tmp_dir("/tmp");
+                let tmp_fs_actual_path = tmp_fs.actual_path().to_path_buf();
+                let fs = PrefixFs::new("/tmp", tmp_fs.clone(), Some(base_fs))
+                    .tmp_dir("/tmp")
+                    .add_fs(tmp_fs_actual_path, tmp_fs);
 
                 Ok(if let Some(s3_fs) = maybe_s3_fs_config.map(S3Fs::new).transpose()? {
                     maybe_s3_fs = Some(s3_fs.clone());
@@ -759,37 +766,62 @@ where
         let beforeunload_cpu_threshold = ArcSwapOption::<u64>::from_pointee(None);
         let beforeunload_mem_threshold = ArcSwapOption::<u64>::from_pointee(None);
 
-        if conf.is_user_worker() {
-            let conf = maybe_user_conf.unwrap();
-            let memory_limit_bytes = mib_to_bytes(conf.memory_limit_mb) as usize;
+        match conf.to_worker_kind() {
+            WorkerKind::UserWorker => {
+                let conf = maybe_user_conf.unwrap();
+                let memory_limit_bytes = mib_to_bytes(conf.memory_limit_mb) as usize;
 
-            beforeunload_mem_threshold.store(
-                flags
-                    .beforeunload_memory_pct
-                    .and_then(|it| percentage_value(memory_limit_bytes as u64, it))
-                    .map(Arc::new),
-            );
-
-            if conf.cpu_time_hard_limit_ms > 0 {
-                beforeunload_cpu_threshold.store(
+                beforeunload_mem_threshold.store(
                     flags
-                        .beforeunload_cpu_pct
-                        .and_then(|it| percentage_value(conf.cpu_time_hard_limit_ms, it))
+                        .beforeunload_memory_pct
+                        .and_then(|it| percentage_value(memory_limit_bytes as u64, it))
                         .map(Arc::new),
                 );
+
+                if conf.cpu_time_hard_limit_ms > 0 {
+                    beforeunload_cpu_threshold.store(
+                        flags
+                            .beforeunload_cpu_pct
+                            .and_then(|it| percentage_value(conf.cpu_time_hard_limit_ms, it))
+                            .map(Arc::new),
+                    );
+                }
+
+                let allocator = CustomAllocator::new(memory_limit_bytes);
+
+                allocator.set_waker(mem_check.waker.clone());
+
+                mem_check.limit = Some(memory_limit_bytes);
+                create_params = Some(
+                    v8::CreateParams::default()
+                        .heap_limits(mib_to_bytes(0) as usize, memory_limit_bytes)
+                        .array_buffer_allocator(allocator.into_v8_allocator()),
+                )
             }
+            kind => {
+                assert_ne!(kind, WorkerKind::UserWorker);
+                let initial_heap_size = match kind {
+                    WorkerKind::MainWorker => &MAIN_WORKER_INITIAL_HEAP_SIZE_MIB,
+                    WorkerKind::EventsWorker => &EVENT_WORKER_INITIAL_HEAP_SIZE_MIB,
+                    _ => unreachable!(),
+                };
+                let max_heap_size = match kind {
+                    WorkerKind::MainWorker => &MAIN_WORKER_MAX_HEAP_SIZE_MIB,
+                    WorkerKind::EventsWorker => &EVENT_WORKER_MAX_HEAP_SIZE_MIB,
+                    _ => unreachable!(),
+                };
 
-            let allocator = CustomAllocator::new(memory_limit_bytes);
+                let initial_heap_size = initial_heap_size.get().cloned().unwrap_or_default();
+                let max_heap_size = max_heap_size.get().cloned().unwrap_or_default();
 
-            allocator.set_waker(mem_check.waker.clone());
-
-            mem_check.limit = Some(memory_limit_bytes);
-            create_params = Some(
-                v8::CreateParams::default()
-                    .heap_limits(mib_to_bytes(0) as usize, memory_limit_bytes)
-                    .array_buffer_allocator(allocator.into_v8_allocator()),
-            )
-        };
+                if max_heap_size > 0 {
+                    create_params = Some(v8::CreateParams::default().heap_limits(
+                        mib_to_bytes(initial_heap_size) as usize,
+                        mib_to_bytes(max_heap_size) as usize,
+                    ));
+                }
+            }
+        }
 
         let mem_check = Arc::new(mem_check);
         let runtime_options = RuntimeOptions {
@@ -1326,10 +1358,12 @@ where
                     if accumulated_cpu_time_ns >= threshold_ns {
                         beforeunload_cpu_threshold.store(None);
 
-                        if let Err(err) = MaybeDenoRuntime::DenoRuntime(&mut this)
-                            .dispatch_beforeunload_event(WillTerminateReason::CPU)
-                        {
-                            return Poll::Ready(Err(err));
+                        if !state.is_terminated() {
+                            if let Err(err) = MaybeDenoRuntime::DenoRuntime(&mut this)
+                                .dispatch_beforeunload_event(WillTerminateReason::CPU)
+                            {
+                                return Poll::Ready(Err(err));
+                            }
                         }
                     }
                 }
@@ -1349,7 +1383,7 @@ where
                     if total_malloced_bytes >= threshold_bytes {
                         beforeunload_mem_threshold.store(None);
 
-                        if !mem_state.is_exceeded() {
+                        if !state.is_terminated() && !mem_state.is_exceeded() {
                             if let Err(err) = MaybeDenoRuntime::DenoRuntime(&mut this)
                                 .dispatch_beforeunload_event(WillTerminateReason::Memory)
                             {

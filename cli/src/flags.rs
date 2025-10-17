@@ -364,6 +364,11 @@ fn get_bundle_command() -> Command {
         .default_value("false")
         .value_parser(FalseyValueParser::new()),
     )
+    .arg(
+      arg!(--"timeout" <SECONDS>)
+        .help("Maximum time in seconds that can be waited for the bundle to complete.")
+        .value_parser(value_parser!(u64).range(..u64::MAX))
+    )
 }
 
 fn get_unbundle_command() -> Command {
@@ -375,7 +380,7 @@ fn get_unbundle_command() -> Command {
         .default_value("./"),
     )
     .arg(
-      arg!(--"eszip" <DIR>)
+      arg!(--"eszip" <Path>)
         .help("Path of eszip to extract")
         .required(true),
     )

@@ -52,6 +52,7 @@ use futures::AsyncReadExt;
 use futures::AsyncSeekExt;
 use futures::FutureExt;
 use glob::glob;
+use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use scopeguard::ScopeGuard;
@@ -773,7 +774,7 @@ pub async fn generate_binary_eszip(
   let root_dir_url = EszipRelativeFileBaseUrl::new(&root_dir_url);
   let root_path = root_dir_url.inner().to_file_path().unwrap();
 
-  let mut contents = HashMap::new();
+  let mut contents = IndexMap::new();
   let mut vfs_count = 0;
   let mut vfs_content_callback_fn = |_path: &_, _key: &_, content: Vec<u8>| {
     let key = format!("vfs://{}", vfs_count);
@@ -1195,8 +1196,31 @@ pub async fn extract_eszip(payload: ExtractEszipPayload) -> bool {
     if let Some(lowest_path) =
       deno::util::path::find_lowest_path(&file_specifiers)
     {
-      extract_modules(&eszip, &file_specifiers, &lowest_path, &output_folder)
-        .await;
+      let targets = eszip
+        .specifiers()
+        .iter()
+        .filter(|it| it.starts_with("static:"))
+        .cloned()
+        .collect::<Vec<_>>();
+
+      {
+        let mut modules = eszip.eszip.modules.0.lock().unwrap();
+        for asset in targets {
+          let url = Url::parse(&asset).unwrap();
+          modules.insert(
+            format!("file://{}", url.path()),
+            EszipV2Module::Redirect { target: asset },
+          );
+        }
+      }
+
+      extract_modules(
+        &eszip,
+        &extract_file_specifiers(&eszip),
+        &lowest_path,
+        &output_folder,
+      )
+      .await;
       true
     } else {
       panic!("Path seems to be invalid");

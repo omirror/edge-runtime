@@ -13,9 +13,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Install deps
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install libblas-dev liblapack-dev libopenblas-dev
+          
     - uses: actions/checkout@v4
     - name: build
-      run: GIT_V_TAG=1.69.1 cargo build --profile release
+      run: GIT_V_TAG=1.69.14 cargo build --profile release
       
     - uses: BetaHuhn/do-spaces-action@v2
       id: spaces

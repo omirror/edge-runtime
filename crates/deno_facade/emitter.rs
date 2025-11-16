@@ -58,6 +58,7 @@ use ext_node::DenoFsNodeResolverEnv;
 use ext_node::NodeResolver;
 use ext_node::PackageJsonResolver;
 
+use crate::cert_provider::get_root_cert_store_provider;
 use crate::permissions::RuntimePermissionDescriptorParser;
 
 struct Deferred<T>(once_cell::unsync::OnceCell<T>);
@@ -281,9 +282,12 @@ impl EmitterFactory {
   }
 
   pub fn http_client_provider(&self) -> &Arc<HttpClientProvider> {
-    self
-      .http_client_provider
-      .get_or_init(|| Arc::new(HttpClientProvider::new(None, None)))
+    self.http_client_provider.get_or_init(|| {
+      Arc::new(HttpClientProvider::new(
+        get_root_cert_store_provider().ok(),
+        None,
+      ))
+    })
   }
 
   pub fn fs(&self) -> Arc<dyn deno::deno_fs::FileSystem> {
@@ -356,7 +360,15 @@ impl EmitterFactory {
           } else {
             CliNpmResolverCreateOptions::Managed(
               CliManagedNpmResolverCreateOptions {
-                snapshot: CliNpmResolverManagedSnapshotOption::Specified(None),
+                snapshot: if let Some(lockfile) =
+                  options.maybe_lockfile().cloned()
+                {
+                  CliNpmResolverManagedSnapshotOption::ResolveFromLockfile(
+                    lockfile,
+                  )
+                } else {
+                  CliNpmResolverManagedSnapshotOption::Specified(None)
+                },
                 maybe_lockfile: options.maybe_lockfile().cloned(),
                 fs,
                 http_client_provider: self.http_client_provider().clone(),

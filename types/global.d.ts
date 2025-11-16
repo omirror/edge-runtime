@@ -70,6 +70,7 @@ interface UserWorkerCreateOptions {
   servicePath?: string | null;
   envVars?: string[][] | [string, string][] | null;
   noModuleCache?: boolean | null;
+  noNpm?: boolean | null;
 
   forceCreate?: boolean | null;
   allowRemoteModules?: boolean | null;
@@ -192,7 +193,7 @@ declare namespace Supabase {
         prompt:
           | string
           | Omit<
-            import("openai").OpenAI.Chat.ChatCompletionCreateParams,
+            import("npm:openai").OpenAI.Chat.ChatCompletionCreateParams,
             "model" | "stream"
           >,
         modelOptions?: ModelOptions,

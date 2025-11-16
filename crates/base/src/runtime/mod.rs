@@ -31,6 +31,7 @@ use cooked_waker::WakeRef;
 use cpu_timer::CPUTimer;
 use ctor::ctor;
 use deno::args::CacheSetting;
+use deno::args::TypeCheckMode;
 use deno::deno_crypto;
 use deno::deno_fetch;
 use deno::deno_fs;
@@ -42,9 +43,6 @@ use deno::deno_package_json;
 use deno::deno_telemetry;
 use deno::deno_telemetry::OtelConfig;
 use deno::deno_tls;
-use deno::deno_tls::deno_native_certs::load_native_certs;
-use deno::deno_tls::rustls::RootCertStore;
-use deno::deno_tls::RootCertStoreProvider;
 use deno::deno_url;
 use deno::deno_web;
 use deno::deno_webidl;
@@ -70,6 +68,7 @@ use deno_core::OpState;
 use deno_core::PollEventLoopOptions;
 use deno_core::ResolutionKind;
 use deno_core::RuntimeOptions;
+use deno_facade::cert_provider::get_root_cert_store_provider;
 use deno_facade::generate_binary_eszip;
 use deno_facade::metadata::Entrypoint;
 use deno_facade::migrate::MigrateOptions;
@@ -82,7 +81,6 @@ use either::Either;
 use either::Either::Left;
 use either::Either::Right;
 use ext_event_worker::events::WorkerEventWithMetadata;
-use ext_runtime::cert::ValueRootCertStoreProvider;
 use ext_runtime::external_memory::CustomAllocator;
 use ext_runtime::MemCheckWaker;
 use ext_runtime::PromiseMetrics;
@@ -133,17 +131,6 @@ pub mod permissions;
 
 const DEFAULT_ALLOC_CHECK_INT_MSEC: u64 = 1000;
 
-static SUPABASE_UA: Lazy<String> = Lazy::new(|| {
-  let deno_version =
-    MAYBE_DENO_VERSION.get().map(|it| &**it).unwrap_or("1.0.0");
-  let supabase_version = option_env!("GIT_V_TAG").unwrap_or("0.1.0");
-  format!(
-    // TODO: It should be changed to a well-known name for the ecosystem.
-    "Deno/{} (variant; SupabaseEdgeRuntime/{})",
-    deno_version, supabase_version
-  )
-});
-
 static ALLOC_CHECK_DUR: Lazy<Duration> = Lazy::new(|| {
   std::env::var("EDGE_RUNTIME_ALLOC_CHECK_INT")
     .ok()
@@ -159,7 +146,6 @@ pub static SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING: OnceCell<bool> =
   OnceCell::new();
 pub static SHOULD_INCLUDE_MALLOCED_MEMORY_ON_MEMCHECK: OnceCell<bool> =
   OnceCell::new();
-pub static MAYBE_DENO_VERSION: OnceCell<String> = OnceCell::new();
 
 pub static MAIN_WORKER_INITIAL_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
 pub static MAIN_WORKER_MAX_HEAP_SIZE_MIB: OnceCell<u64> = OnceCell::new();
@@ -242,7 +228,6 @@ pub trait GetRuntimeContext {
     conf: &WorkerRuntimeOpts,
     use_inspector: bool,
     migrated: bool,
-    version: Option<&str>,
     otel_config: Option<OtelConfig>,
   ) -> impl Serialize {
     serde_json::json!({
@@ -252,11 +237,8 @@ pub trait GetRuntimeContext {
       "inspector": use_inspector,
       "migrated": migrated,
       "version": {
-        "runtime": version.unwrap_or("0.1.0"),
-        "deno": MAYBE_DENO_VERSION
-          .get()
-          .map(|it| &**it)
-          .unwrap_or("UNKNOWN"),
+        "runtime": deno::edge_runtime_version(),
+        "deno": deno::version(),
       },
       "flags": {
         "SHOULD_DISABLE_DEPRECATED_API_WARNING":
@@ -470,6 +452,7 @@ where
       mut conf,
       service_path,
       no_module_cache,
+      no_npm,
       env_vars,
       maybe_eszip,
       maybe_entrypoint,
@@ -515,6 +498,11 @@ where
         // TODO(Nyannyacha): Make sure `service_path` is an absolute path first.
         let base_dir_path =
           std::env::current_dir().map(|p| p.join(&service_path))?;
+
+        let maybe_import_map_path = context
+          .get("importMapPath")
+          .and_then(|it| it.as_str())
+          .map(str::to_string);
 
         let eszip = if let Some(eszip_payload) = maybe_eszip {
           eszip_payload
@@ -584,6 +572,11 @@ where
           if let Some(module_url) = main_module_url.as_ref() {
             builder.set_entrypoint(Some(module_url.to_file_path().unwrap()));
           }
+          builder
+            .set_type_check_mode(is_user_worker.then_some(TypeCheckMode::Local))
+            .set_no_npm(no_npm)
+            .set_import_map_path(maybe_import_map_path.clone());
+
           emitter_factory.set_deno_options(builder.build()?);
 
           let deno_options = emitter_factory.deno_options()?;
@@ -631,10 +624,6 @@ where
           .get("sourceMap")
           .and_then(serde_json::Value::as_bool)
           .unwrap_or_default();
-        let maybe_import_map_path = context
-          .get("importMapPath")
-          .and_then(|it| it.as_str())
-          .map(str::to_string);
 
         let rt_provider = create_module_loader_for_standalone_from_eszip_kind(
           eszip,
@@ -764,13 +753,13 @@ where
           deno_canvas::deno_canvas::init_ops(),
           deno_fetch::deno_fetch::init_ops::<PermissionsContainer>(
             deno_fetch::Options {
-              user_agent: SUPABASE_UA.clone(),
+              user_agent: deno::versions::user_agent().to_string(),
               root_cert_store_provider: Some(root_cert_store_provider.clone()),
               ..Default::default()
             },
           ),
           deno_websocket::deno_websocket::init_ops::<PermissionsContainer>(
-            SUPABASE_UA.clone(),
+            deno::versions::user_agent().to_string(),
             Some(root_cert_store_provider.clone()),
             None,
           ),
@@ -1030,7 +1019,6 @@ where
                 &conf,
                 has_inspector,
                 migrated,
-                option_env!("GIT_V_TAG"),
                 maybe_otel_config,
               ));
 
@@ -2250,53 +2238,6 @@ fn terminate_execution_if_cancelled(
   )
 }
 
-fn get_root_cert_store_provider(
-) -> Result<Arc<dyn RootCertStoreProvider>, AnyError> {
-  // Create and populate a root cert store based on environment variable.
-  // Reference: https://github.com/denoland/deno/blob/v1.37.0/cli/args/mod.rs#L467
-  let mut root_cert_store = RootCertStore::empty();
-  let ca_stores: Vec<String> = (|| {
-    let env_ca_store = std::env::var("DENO_TLS_CA_STORE").ok()?;
-    Some(
-      env_ca_store
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect(),
-    )
-  })()
-  .unwrap_or_else(|| vec!["mozilla".to_string()]);
-
-  for store in ca_stores.iter() {
-    match store.as_str() {
-      "mozilla" => {
-        root_cert_store = deno_tls::create_default_root_cert_store();
-      }
-      "system" => {
-        let roots = load_native_certs().expect("could not load platform certs");
-        for root in roots {
-          root_cert_store
-            .add((&*root.0).into())
-            .expect("Failed to add platform cert to root cert store");
-        }
-      }
-      _ => {
-        bail!(
-          concat!(
-            "Unknown certificate store \"{0}\" specified ",
-            "(allowed: \"system,mozilla\")"
-          ),
-          store
-        );
-      }
-    }
-  }
-
-  Ok(Arc::new(ValueRootCertStoreProvider::new(
-    root_cert_store.clone(),
-  )))
-}
-
 fn set_v8_flags() {
   let v8_flags = std::env::var("V8_FLAGS").unwrap_or("".to_string());
   let mut vec = vec![""];
@@ -2329,7 +2270,6 @@ extern "C" fn mem_check_gc_prologue_callback_fn(
 #[cfg(test)]
 mod test {
   use std::collections::HashMap;
-  use std::fs::File;
   use std::io::Write;
   use std::marker::PhantomData;
   use std::path::Path;
@@ -2361,6 +2301,7 @@ mod test {
   use serde::de::DeserializeOwned;
   use serde::Serialize;
   use serial_test::serial;
+  use tempfile::Builder;
   use tokio::sync::mpsc;
   use tokio::time::timeout;
 
@@ -2465,6 +2406,7 @@ mod test {
             maybe_module_code: None,
 
             no_module_cache: false,
+            no_npm: None,
             env_vars: env_vars.unwrap_or_default(),
 
             static_patterns,
@@ -2558,6 +2500,7 @@ mod test {
         WorkerContextInitOpts {
           service_path: PathBuf::from("./test_cases/"),
           no_module_cache: false,
+          no_npm: None,
           env_vars: Default::default(),
           timing: None,
           maybe_eszip: None,
@@ -2593,11 +2536,18 @@ mod test {
   #[allow(clippy::arc_with_non_send_sync)]
   async fn test_eszip_with_source_file() {
     let (worker_pool_tx, _) = mpsc::unbounded_channel::<UserWorkerMsgs>();
-    let mut file = File::create("./test_cases/eszip-source-test.ts").unwrap();
-    file.write_all(b"import isEven from \"npm:is-even\"; globalThis.isTenEven = isEven(9);")
+    let mut temp_file = Builder::new()
+      .prefix("eszip-source-test")
+      .suffix(".ts")
+      .tempfile_in("./test_cases")
+      .unwrap();
+    temp_file
+      .write_all(
+        b"import isEven from \"npm:is-even\"; globalThis.isTenEven = isEven(9);",
+      )
       .unwrap();
 
-    let path_buf = PathBuf::from("./test_cases/eszip-source-test.ts");
+    let path_buf = temp_file.path().to_path_buf();
     let mut emitter_factory = EmitterFactory::new();
 
     emitter_factory.set_deno_options(
@@ -2618,7 +2568,8 @@ mod test {
     .await
     .unwrap();
 
-    std::fs::remove_file("./test_cases/eszip-source-test.ts").unwrap();
+    let temp_path = temp_file.into_temp_path();
+    temp_path.close().unwrap();
 
     let eszip_code = bin_eszip.into_bytes();
     let runtime = DenoRuntime::<()>::new(
@@ -2626,6 +2577,7 @@ mod test {
         WorkerContextInitOpts {
           service_path: PathBuf::from("./test_cases/"),
           no_module_cache: false,
+          no_npm: None,
           env_vars: Default::default(),
           timing: None,
           maybe_eszip: Some(EszipPayloadKind::VecKind(eszip_code)),
@@ -2714,6 +2666,7 @@ mod test {
         WorkerContextInitOpts {
           service_path,
           no_module_cache: false,
+          no_npm: None,
           env_vars: Default::default(),
           timing: None,
           maybe_eszip: Some(EszipPayloadKind::VecKind(eszip_code)),
@@ -3047,7 +3000,10 @@ mod test {
       .to_vec();
     assert_eq!(
       deno_version_array.first().unwrap().as_str().unwrap(),
-      "supabase-edge-runtime-0.1.0 (compatible with Deno vUNKNOWN)"
+      format!(
+        "supabase-edge-runtime-0.1.0 (compatible with Deno v{})",
+        deno::version()
+      )
     );
     assert_eq!(
       deno_version_array.get(1).unwrap().as_str().unwrap(),

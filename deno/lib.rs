@@ -28,6 +28,7 @@ use deno_npm::npm_rc::ResolvedNpmRc;
 use deno_path_util::normalize_path;
 use dotenvy::from_filename;
 use file_fetcher::FileFetcher;
+use import_map::load_import_map;
 
 pub mod args;
 pub mod auth_tokens;
@@ -37,6 +38,7 @@ pub mod errors;
 pub mod file_fetcher;
 pub mod graph_util;
 pub mod http_util;
+pub mod import_map;
 pub mod node;
 pub mod npm;
 pub mod npmrc;
@@ -76,6 +78,7 @@ pub use deno_resolver;
 pub use node_resolver;
 
 pub use deno_permissions::PermissionsContainer;
+pub use versions::edge_runtime_version;
 
 pub fn version() -> &'static str {
   env!("CARGO_PKG_VERSION")
@@ -204,7 +207,9 @@ impl DenoOptions {
     Ok(self.workspace().create_resolver(
       CreateResolverOptions {
         pkg_json_dep_resolution,
-        specified_import_map: None,
+        specified_import_map: load_import_map(
+          self.builder.import_map_path.as_deref(),
+        )?,
       },
       |path| Ok(std::fs::read_to_string(path)?),
     )?)
@@ -373,6 +378,7 @@ pub struct DenoOptionsBuilder {
   env_file: Option<Vec<String>>,
   frozen_lockfile: Option<bool>,
   force_global_cache: Option<bool>,
+  import_map_path: Option<String>,
 }
 
 impl Default for DenoOptionsBuilder {
@@ -397,6 +403,7 @@ impl DenoOptionsBuilder {
       env_file: None,
       frozen_lockfile: None,
       force_global_cache: None,
+      import_map_path: None,
     }
   }
 
@@ -533,6 +540,16 @@ impl DenoOptionsBuilder {
 
   pub fn set_force_global_cache(&mut self, value: Option<bool>) -> &mut Self {
     self.frozen_lockfile = value;
+    self
+  }
+
+  pub fn import_map_path(mut self, value: String) -> Self {
+    self.import_map_path = Some(value);
+    self
+  }
+
+  pub fn set_import_map_path(&mut self, value: Option<String>) -> &mut Self {
+    self.import_map_path = value;
     self
   }
 

@@ -878,6 +878,7 @@ dependencies = [
  "deno_core",
  "deno_facade",
  "deno_webgpu",
+ "diff",
  "either",
  "enum-as-inner",
  "eszip",
@@ -1891,6 +1892,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "twox-hash",
+ "urlencoding",
  "winapi",
 ]
 
@@ -2171,7 +2173,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "urlencoding",
 ]
 
 [[package]]

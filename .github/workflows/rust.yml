@@ -20,7 +20,7 @@ jobs:
           
     - uses: actions/checkout@v4
     - name: build
-      run: GIT_V_TAG=1.69.14 cargo build --profile release
+      run: GIT_V_TAG=1.70.3 cargo build --profile release
       
     - uses: BetaHuhn/do-spaces-action@v2
       id: spaces
